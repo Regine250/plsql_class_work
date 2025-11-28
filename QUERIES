@@ -1,0 +1,318 @@
+
+CREATE TABLE users (
+    user_id      NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    username     VARCHAR2(50) UNIQUE NOT NULL,
+    password     VARCHAR2(50) NOT NULL,
+    role         VARCHAR2(20),
+    date_created DATE DEFAULT SYSDATE
+);
+
+INSERT INTO users (username, password, role)
+VALUES ('jdoe', 'pass123', 'Admin');
+
+INSERT INTO users (username, password, role)
+VALUES ('mbenjamin', 'mb234', 'Staff');
+
+INSERT INTO users (username, password, role)
+VALUES ('regine', 'rg567', 'Manager');
+
+
+CREATE TABLE employees (
+    emp_id        NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    full_name     VARCHAR2(100) NOT NULL,
+    department    VARCHAR2(50),
+    salary        NUMBER(10,2),
+    hire_date     DATE DEFAULT SYSDATE
+);
+
+INSERT INTO employees (full_name, department, salary)
+VALUES ('John Kamali', 'IT', 850000);
+
+INSERT INTO employees (full_name, department, salary)
+VALUES ('Sarah Mukamana', 'Finance', 920000);
+
+INSERT INTO employees (full_name, department, salary)
+VALUES ('Peter Ndayisaba', 'HR', 780000);
+
+
+--TRIGGER LOGIN VIOLATION
+
+CREATE TABLE access_violation_log (
+    log_id        NUMBER GENERATED ALWAYS AS IDENTITY,
+    username      VARCHAR2(50),
+    table_name    VARCHAR2(50),
+    action_type   VARCHAR2(20),
+    attempted_on  DATE,
+    details       VARCHAR2(200)
+);
+
+
+
+CREATE OR REPLACE TRIGGER trg_enforce_access_policy
+BEFORE INSERT OR UPDATE OR DELETE ON employees   
+FOR EACH ROW
+DECLARE
+    v_day  VARCHAR2(10);
+    v_hour NUMBER;
+BEGIN
+    -- Extract current day and hour
+    v_day  := TO_CHAR(SYSDATE, 'DY', 'NLS_DATE_LANGUAGE=ENGLISH');
+    v_hour := TO_NUMBER(TO_CHAR(SYSDATE, 'HH24'));
+
+    -- Rule 1: Block Saturday (SAT) and Sunday (SUN)
+    IF v_day IN ('SAT', 'SUN') THEN
+        RAISE_APPLICATION_ERROR(-20001,
+            'ACCESS BLOCKED: No access allowed on Sabbath (Saturday or Sunday).');
+    END IF;
+
+    -- Rule 2: Block outside 08:00–17:00
+    IF v_hour < 8 OR v_hour >= 17 THEN
+        RAISE_APPLICATION_ERROR(-20002,
+            'ACCESS BLOCKED: Allowed time is Monday–Friday, 08:00 to 17:00.');
+    END IF;
+
+END;
+/
+
+
+-- TRIGGER ON USERS
+
+
+CREATE OR REPLACE TRIGGER trg_restrict_access_users
+BEFORE INSERT OR UPDATE OR DELETE ON users
+DECLARE
+    v_day VARCHAR2(10);
+    v_hour NUMBER;
+BEGIN
+    v_day  := TO_CHAR(SYSDATE, 'DY', 'NLS_DATE_LANGUAGE=ENGLISH');
+    v_hour := TO_NUMBER(TO_CHAR(SYSDATE, 'HH24'));
+
+    IF v_day IN ('SAT', 'SUN') THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Access not allowed on weekends.');
+    END IF;
+
+    IF v_hour < 8 OR v_hour >= 17 THEN
+        RAISE_APPLICATION_ERROR(-20002,
+            'Access allowed only between 8 AM and 5 PM.');
+    END IF;
+END;
+/
+
+-- LOG ERRORS
+
+CREATE OR REPLACE TRIGGER trg_log_violations
+AFTER SERVERERROR ON DATABASE
+DECLARE
+    v_username VARCHAR2(50);
+    v_error_code NUMBER;
+    v_action VARCHAR2(20);
+    v_table VARCHAR2(50);
+BEGIN
+    v_username  := SYS_CONTEXT('USERENV', 'SESSION_USER');
+    v_error_code := ORA_SERVER_ERROR(1);
+
+    -- Only log the access restriction errors
+    IF v_error_code IN (-20001, -20002) THEN
+        INSERT INTO access_violation_log (
+            username, table_name, action_type, attempted_on, details
+        )
+        VALUES (
+            v_username,
+            ORA_SERVER_ERROR_MSG(1),
+            'DML Action',
+            SYSDATE,
+            'Access denied. Error: ' || v_error_code
+        );
+    END IF;
+END;
+/
+-- TEST
+
+select * from employees;
+
+
+
+UPDATE employees set salary = 900000 where emp_id = 2;
+
+SELECT * FROM access_violation_log;
+
+
+
+
+## Q4. HOSPITAL MANAGEMENT SYSTEM.
+
+-- PATIENTS TABLE
+
+
+CREATE TABLE patients (
+    patient_id     NUMBER PRIMARY KEY,
+    patient_name   VARCHAR2(50),
+    age            NUMBER,
+    gender         VARCHAR2(10),
+    admitted       VARCHAR2(3) DEFAULT 'NO'
+);
+
+-- DOCTORS TABLE
+
+
+CREATE TABLE doctors (
+    doctor_id      NUMBER PRIMARY KEY,
+    doctor_name    VARCHAR2(50),
+    specialty      VARCHAR2(50)
+);
+
+-- HSOPITAL PACKAGE
+
+CREATE OR REPLACE PACKAGE hospital_pkg IS
+    
+    -- Collection type for bulk patients
+
+    TYPE patient_rec IS RECORD (
+        patient_id     NUMBER,
+        patient_name   VARCHAR2(50),
+        age            NUMBER,
+        gender         VARCHAR2(10),
+        admitted       VARCHAR2(3)
+    );
+
+    TYPE patient_table_type IS TABLE OF patient_rec;
+
+    -- Procedures & functions
+
+    PROCEDURE bulk_load_patients(p_patients IN patient_table_type);
+    
+    FUNCTION show_all_patients RETURN SYS_REFCURSOR;
+    
+    FUNCTION count_admitted RETURN NUMBER;
+
+    PROCEDURE admit_patient(p_id IN NUMBER);
+
+END hospital_pkg;
+/
+
+--PACKAGE BODY
+
+CREATE OR REPLACE PACKAGE BODY hospital_pkg IS
+
+    -- Bulk Insert Procedure
+
+    PROCEDURE bulk_load_patients(p_patients IN patient_table_type) IS
+    BEGIN
+        FORALL i IN 1 .. p_patients.COUNT
+            INSERT INTO patients(patient_id, patient_name, age, gender, admitted)
+            VALUES (
+                p_patients(i).patient_id,
+                p_patients(i).patient_name,
+                p_patients(i).age,
+                p_patients(i).gender,
+                p_patients(i).admitted
+            );
+        COMMIT;
+    END bulk_load_patients;
+
+
+    -- Function to return all patients
+    FUNCTION show_all_patients RETURN SYS_REFCURSOR IS
+        rc SYS_REFCURSOR;
+    BEGIN
+        OPEN rc FOR SELECT * FROM patients;
+        RETURN rc;
+    END show_all_patients;
+
+
+    -- Count admitted patients
+
+    FUNCTION count_admitted RETURN NUMBER IS
+        v_count NUMBER;
+    BEGIN
+        SELECT COUNT(*) INTO v_count
+        FROM patients
+        WHERE admitted = 'YES';
+
+        RETURN v_count;
+    END count_admitted;
+
+
+    -- Admit a patient
+
+    PROCEDURE admit_patient(p_id IN NUMBER) IS
+    BEGIN
+        UPDATE patients
+        SET admitted = 'YES'
+        WHERE patient_id = p_id;
+
+        COMMIT;
+    END admit_patient;
+
+END hospital_pkg;
+/
+
+-- TEST BULK LOAD
+
+DECLARE
+    patient_list hospital_pkg.patient_table_type :=
+        hospital_pkg.patient_table_type();
+BEGIN
+    patient_list.EXTEND(3);
+
+    patient_list(1).patient_id   := 1;
+    patient_list(1).patient_name := 'Alice';
+    patient_list(1).age          := 30;
+    patient_list(1).gender       := 'F';
+    patient_list(1).admitted     := 'NO';
+
+    patient_list(2).patient_id   := 2;
+    patient_list(2).patient_name := 'Bob';
+    patient_list(2).age          := 45;
+    patient_list(2).gender       := 'M';
+    patient_list(2).admitted     := 'NO';
+
+    patient_list(3).patient_id   := 3;
+    patient_list(3).patient_name := 'Clara';
+    patient_list(3).age          := 27;
+    patient_list(3).gender       := 'F';
+    patient_list(3).admitted     := 'NO';
+
+    -- Call the bulk load procedure
+    hospital_pkg.bulk_load_patients(patient_list);
+END;
+/
+
+
+--test 
+
+VARIABLE my_cursor REFCURSOR;
+
+BEGIN
+    :my_cursor := hospital_pkg.show_all_patients;
+END;
+/
+
+PRINT my_cursor;
+
+
+
+BEGIN
+    hospital_pkg.admit_patient(2);   -- Admit Bob
+END;
+/
+
+SELECT * FROM patients;
+
+-- Count admitted patients
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('Number of admitted patients = ' || hospital_pkg.count_admitted);
+END;
+/
+
+SET SERVEROUTPUT ON;
+
+BEGIN
+    DBMS_OUTPUT.PUT_LINE(
+        'Number of admitted patients: ' || hospital_pkg.count_admitted
+    );
+END;
+
+
+
+
